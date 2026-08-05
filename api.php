@@ -1,10 +1,15 @@
 <?php
 header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *");
+// CORS - permitir origens específicas em produção
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+header("Access-Control-Allow-Origin: " . ($origin === '*' ? '*' : $origin));
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
-// Conexão com banco - ajustar credenciais conforme ambiente
+// Simple token store file (for demo). In production, use DB or cache.
+define('TOKEN_STORE', __DIR__ . '/tokens.json');
+
+// DB connection - adjust for your environment
 $mysqli = new mysqli("localhost", "root", "", "gaveta_inteligente");
 if ($mysqli->connect_error) {
     http_response_code(500);
@@ -21,18 +26,114 @@ function calcularDistanciaMetros($lat1, $lon1, $lat2, $lon2) {
     return $earthRadius * $c;
 }
 
+function load_tokens() {
+    if (!file_exists(TOKEN_STORE)) return [];
+    $raw = file_get_contents(TOKEN_STORE);
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : [];
+}
+
+function save_tokens($tokens) {
+    file_put_contents(TOKEN_STORE, json_encode($tokens));
+}
+
+function generate_token() {
+    return bin2hex(random_bytes(16));
+}
+
+function get_bearer_token() {
+    $headers = getallheaders();
+    if (isset($headers['Authorization'])) {
+        $matches = [];
+        if (preg_match('/Bearer\s+(.*)$/i', $headers['Authorization'], $matches)) {
+            return trim($matches[1]);
+        }
+    }
+    // check query param
+    if (isset($_GET['token'])) return $_GET['token'];
+    return null;
+}
+
+function require_auth() {
+    $token = get_bearer_token();
+    if (!$token) {
+        http_response_code(401);
+        echo json_encode(["error" => "Unauthorized"]);
+        exit;
+    }
+    $tokens = load_tokens();
+    if (!isset($tokens[$token])) {
+        http_response_code(401);
+        echo json_encode(["error" => "Token inválido ou expirado"]);
+        exit;
+    }
+    // check expiry
+    if ($tokens[$token] < time()) {
+        unset($tokens[$token]);
+        save_tokens($tokens);
+        http_response_code(401);
+        echo json_encode(["error" => "Token expirado"]);
+        exit;
+    }
+    return true;
+}
+
 $method = $_SERVER['REQUEST_METHOD'];
+action:
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
-// Rota OPTIONS (CORS preflight)
+// OPTIONS
 if ($method === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
-// 1) DASHBOARD
+// AUTH: login, logout, validate
+if ($method === 'POST' && $action === 'login') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $user = $input['username'] ?? '';
+    $pass = $input['password'] ?? '';
+    // use env vars in production
+    $admin_user = getenv('GAVETA_ADMIN_USER') ?: 'admin';
+    $admin_pass = getenv('GAVETA_ADMIN_PASS') ?: 'admin';
+    if ($user === $admin_user && $pass === $admin_pass) {
+        $tokens = load_tokens();
+        $token = generate_token();
+        // token válido por 8 horas
+        $tokens[$token] = time() + 8 * 3600;
+        save_tokens($tokens);
+        echo json_encode(["status" => "ok", "token" => $token]);
+    } else {
+        http_response_code(401);
+        echo json_encode(["error" => "Credenciais inválidas"]);
+    }
+    exit;
+}
+
+if ($method === 'POST' && $action === 'logout') {
+    $token = get_bearer_token();
+    $tokens = load_tokens();
+    if ($token && isset($tokens[$token])) {
+        unset($tokens[$token]);
+        save_tokens($tokens);
+    }
+    echo json_encode(["status" => "ok"]);
+    exit;
+}
+
+if ($method === 'GET' && $action === 'validate_token') {
+    $token = get_bearer_token();
+    $tokens = load_tokens();
+    if ($token && isset($tokens[$token]) && $tokens[$token] >= time()) {
+        echo json_encode(["valid" => true]);
+    } else {
+        echo json_encode(["valid" => false]);
+    }
+    exit;
+}
+
+// 1) DASHBOARD (public read)
 if ($method === 'GET' && $action === 'dados_dashboard') {
-    // Atualiza entregas expiradas (JOIN correto)
     $updateSql = "UPDATE Entregas e
         JOIN Apartamentos a ON e.apartamento_id = a.id
         JOIN Condominio c ON a.condominio_id = c.id
@@ -51,7 +152,7 @@ if ($method === 'GET' && $action === 'dados_dashboard') {
     exit;
 }
 
-// 2) CONDOMINIOS
+// 2) CONDOMÍNIOS
 if ($action === 'listar_condominios') {
     $res = $mysqli->query("SELECT id, nome, cep, endereco, whatsapp_sindico, prazo_retirada_horas, latitude, longitude FROM Condominio ORDER BY nome ASC");
     $dados = [];
@@ -61,6 +162,7 @@ if ($action === 'listar_condominios') {
 }
 
 if ($method === 'POST' && $action === 'salvar_condominio') {
+    require_auth();
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) { echo json_encode(["error"=>"Payload inválido"]); exit; }
 
@@ -89,6 +191,7 @@ if ($method === 'POST' && $action === 'salvar_condominio') {
 }
 
 if ($method === 'POST' && $action === 'excluir_condominio') {
+    require_auth();
     $id = intval($_GET['id'] ?? 0);
     $stmt = $mysqli->prepare("DELETE FROM Condominio WHERE id = ?");
     $stmt->bind_param('i', $id);
@@ -107,7 +210,6 @@ if ($action === 'listar_moradores') {
         $stmt->execute();
         $res = $stmt->get_result();
     } else {
-        // retorna todos os apartamentos se nenhum condominio for informado
         $res = $mysqli->query("SELECT * FROM Apartamentos ORDER BY bloco ASC, numero ASC");
     }
     $dados = [];
@@ -117,6 +219,7 @@ if ($action === 'listar_moradores') {
 }
 
 if ($method === 'POST' && $action === 'salvar_morador') {
+    require_auth();
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) { echo json_encode(["error"=>"Payload inválido"]); exit; }
 
@@ -145,6 +248,7 @@ if ($method === 'POST' && $action === 'salvar_morador') {
 }
 
 if ($method === 'POST' && $action === 'excluir_morador') {
+    require_auth();
     $id = intval($_GET['id'] ?? 0);
     $stmt = $mysqli->prepare("DELETE FROM Apartamentos WHERE id = ?");
     $stmt->bind_param('i', $id);
@@ -156,7 +260,7 @@ if ($method === 'POST' && $action === 'excluir_morador') {
 
 // 4) EMPRESAS / LOGISTICA
 if ($method === 'POST' && $action === 'salvar_empresa') {
-    // aceitar multipart/form-data
+    require_auth();
     $nome = $_POST['nome_empresa'] ?? '';
     $empresa_id = intval($_POST['empresa_id'] ?? 0);
     $logo_path = null;
@@ -198,6 +302,7 @@ if ($action === 'listar_empresas') {
 }
 
 if ($method === 'POST' && $action === 'excluir_empresa') {
+    require_auth();
     $id = intval($_GET['id'] ?? 0);
     $stmt = $mysqli->prepare("DELETE FROM Logistica WHERE id = ?");
     $stmt->bind_param('i', $id);
@@ -234,7 +339,7 @@ if ($method === 'GET' && $action === 'dados_entrega_condominio') {
     exit;
 }
 
-// 6) VALIDAR PERIMETRO POR TOKEN (retirada via QR)
+// 6) VALIDAR PERIMETRO POR TOKEN
 if ($method === 'POST' && $action === 'validar_perimetro_morador') {
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) { echo json_encode(["error"=>"Payload inválido"]); exit; }
@@ -268,8 +373,9 @@ if ($method === 'POST' && $action === 'validar_perimetro_morador') {
     exit;
 }
 
-// Rotas legadas (laboratório)
+// Rotas legadas (laboratório) - require auth
 if ($method === 'POST' && $action === 'criar_pendente') {
+    require_auth();
     $input = json_decode(file_get_contents('php://input'), true);
     $apto_id = intval($input['apto_id'] ?? 0);
     $empresa = $mysqli->real_escape_string($input['empresa'] ?? '');
@@ -280,8 +386,8 @@ if ($method === 'POST' && $action === 'criar_pendente') {
     $stmt->close();
     exit;
 }
-
 if ($method === 'POST' && $action === 'cancelar_entrega') {
+    require_auth();
     $input = json_decode(file_get_contents('php://input'), true);
     $id = intval($input['entrega_id'] ?? 0);
     $stmt = $mysqli->prepare("DELETE FROM Entregas WHERE id = ? AND status_entrega = 'pendente'");
