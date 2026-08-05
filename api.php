@@ -1,15 +1,36 @@
 <?php
+// api.php - session-based authentication (HttpOnly cookie)
 header("Content-Type: application/json; charset=UTF-8");
-// CORS - permitir origens específicas em produção
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
-header("Access-Control-Allow-Origin: " . ($origin === '*' ? '*' : $origin));
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
-// Simple token store file (for demo). In production, use DB or cache.
-define('TOKEN_STORE', __DIR__ . '/tokens.json');
+// CORS: for credentialed requests, cannot use wildcard '*'.
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+$allowed_origins = [
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+];
+if ($origin && in_array($origin, $allowed_origins)) {
+    header("Access-Control-Allow-Origin: $origin");
+    header('Access-Control-Allow-Credentials: true');
+} else {
+    // fallback for same-origin or unknown origins during development
+    header('Access-Control-Allow-Origin: *');
+}
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, X-Requested-With');
 
-// DB connection - adjust for your environment
+// Session cookie params - set secure/httponly/samesite
+$secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['SERVER_PORT'] ?? 0) == 443;
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => $_SERVER['HTTP_HOST'] ?? '',
+    'secure' => $secure,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
+session_start();
+
+// DB connection - adjust credentials per environment
 $mysqli = new mysqli("localhost", "root", "", "gaveta_inteligente");
 if ($mysqli->connect_error) {
     http_response_code(500);
@@ -26,83 +47,47 @@ function calcularDistanciaMetros($lat1, $lon1, $lat2, $lon2) {
     return $earthRadius * $c;
 }
 
-function load_tokens() {
-    if (!file_exists(TOKEN_STORE)) return [];
-    $raw = file_get_contents(TOKEN_STORE);
-    $data = json_decode($raw, true);
-    return is_array($data) ? $data : [];
-}
-
-function save_tokens($tokens) {
-    file_put_contents(TOKEN_STORE, json_encode($tokens));
-}
-
-function generate_token() {
-    return bin2hex(random_bytes(16));
-}
-
-function get_bearer_token() {
-    $headers = getallheaders();
-    if (isset($headers['Authorization'])) {
-        $matches = [];
-        if (preg_match('/Bearer\s+(.*)$/i', $headers['Authorization'], $matches)) {
-            return trim($matches[1]);
-        }
-    }
-    // check query param
-    if (isset($_GET['token'])) return $_GET['token'];
-    return null;
-}
-
 function require_auth() {
-    $token = get_bearer_token();
-    if (!$token) {
+    if (!isset($_SESSION['user']) || empty($_SESSION['user'])) {
         http_response_code(401);
         echo json_encode(["error" => "Unauthorized"]);
         exit;
     }
-    $tokens = load_tokens();
-    if (!isset($tokens[$token])) {
+    if (isset($_SESSION['expires']) && $_SESSION['expires'] < time()) {
+        // session expired
+        session_unset();
+        session_destroy();
         http_response_code(401);
-        echo json_encode(["error" => "Token inválido ou expirado"]);
+        echo json_encode(["error" => "Session expired"]);
         exit;
     }
-    // check expiry
-    if ($tokens[$token] < time()) {
-        unset($tokens[$token]);
-        save_tokens($tokens);
-        http_response_code(401);
-        echo json_encode(["error" => "Token expirado"]);
-        exit;
-    }
-    return true;
+    // refresh expiry (sliding)
+    $_SESSION['expires'] = time() + 8 * 3600;
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
-action:
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
-// OPTIONS
+// OPTIONS preflight
 if ($method === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
-// AUTH: login, logout, validate
+// AUTH endpoints (session-based)
 if ($method === 'POST' && $action === 'login') {
     $input = json_decode(file_get_contents('php://input'), true);
     $user = $input['username'] ?? '';
     $pass = $input['password'] ?? '';
-    // use env vars in production
+
     $admin_user = getenv('GAVETA_ADMIN_USER') ?: 'admin';
     $admin_pass = getenv('GAVETA_ADMIN_PASS') ?: 'admin';
+
     if ($user === $admin_user && $pass === $admin_pass) {
-        $tokens = load_tokens();
-        $token = generate_token();
-        // token válido por 8 horas
-        $tokens[$token] = time() + 8 * 3600;
-        save_tokens($tokens);
-        echo json_encode(["status" => "ok", "token" => $token]);
+        session_regenerate_id(true);
+        $_SESSION['user'] = $user;
+        $_SESSION['expires'] = time() + 8 * 3600; // 8h
+        echo json_encode(["status" => "ok"]);
     } else {
         http_response_code(401);
         echo json_encode(["error" => "Credenciais inválidas"]);
@@ -111,20 +96,16 @@ if ($method === 'POST' && $action === 'login') {
 }
 
 if ($method === 'POST' && $action === 'logout') {
-    $token = get_bearer_token();
-    $tokens = load_tokens();
-    if ($token && isset($tokens[$token])) {
-        unset($tokens[$token]);
-        save_tokens($tokens);
-    }
+    // destroy session cookie and data
+    session_unset();
+    session_destroy();
+    setcookie(session_name(), '', time() - 3600, '/');
     echo json_encode(["status" => "ok"]);
     exit;
 }
 
-if ($method === 'GET' && $action === 'validate_token') {
-    $token = get_bearer_token();
-    $tokens = load_tokens();
-    if ($token && isset($tokens[$token]) && $tokens[$token] >= time()) {
+if ($method === 'GET' && $action === 'validate_session') {
+    if (isset($_SESSION['user']) && isset($_SESSION['expires']) && $_SESSION['expires'] >= time()) {
         echo json_encode(["valid" => true]);
     } else {
         echo json_encode(["valid" => false]);
