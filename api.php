@@ -1,5 +1,5 @@
 <?php
-// api.php - session-based authentication (HttpOnly cookie)
+// api.php - session-based authentication (HttpOnly cookie) with optional Redis session backend
 header("Content-Type: application/json; charset=UTF-8");
 
 // CORS: for credentialed requests, cannot use wildcard '*'.
@@ -18,6 +18,15 @@ if ($origin && in_array($origin, $allowed_origins)) {
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, X-Requested-With');
 
+// If Redis is configured via environment variables, enable Redis session handler before starting session.
+if (getenv('REDIS_HOST')) {
+    // lib/session_redis.php sets session.save_handler and session.save_path accordingly
+    $redisHelper = __DIR__ . '/lib/session_redis.php';
+    if (file_exists($redisHelper)) {
+        require_once $redisHelper;
+    }
+}
+
 // Session cookie params - set secure/httponly/samesite
 $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['SERVER_PORT'] ?? 0) == 443;
 session_set_cookie_params([
@@ -28,6 +37,7 @@ session_set_cookie_params([
     'httponly' => true,
     'samesite' => 'Lax'
 ]);
+
 session_start();
 
 // DB connection - adjust credentials per environment
