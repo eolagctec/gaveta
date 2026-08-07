@@ -1,125 +1,382 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Master Operacional - Gaveta</title>
-  <link rel="stylesheet" href="/assets/styles.css">
-  <!-- Leaflet e QRCode se necessário -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Master Operacional - Painel do Condomínio</title>
+    <!-- Leaflet CSS & JS (must load before any script that uses L) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <script src="https://cloudflare.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com" />
+    <script src="https://unpkg.com"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
+        body { background-color: #f1f5f9; color: #334155; display: flex; min-height: 100vh; }
+        
+        #login-screen { position: fixed; inset: 0; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+        .login-card { background: white; padding: 2.5rem; border-radius: 1rem; width: 100%; max-width: 24rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+        
+        sidebar { width: 16rem; background: #0f172a; color: white; display: flex; flex-direction: column; padding: 1.5rem 1rem; }
+        sidebar .brand { font-size: 1.25rem; font-weight: 700; color: #38bdf8; text-align: center; margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }
+        sidebar .nav-item { padding: 0.75rem 1rem; border-radius: 0.5rem; color: #94a3b8; font-weight: 600; cursor: pointer; display: block; margin-bottom: 0.5rem; }
+        sidebar .nav-item.active, sidebar .nav-item:hover { background: #1e293b; color: white; }
+        
+        content-wrapper { flex-grow: 1; display: flex; flex-direction: column; }
+        header { background: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; }
+        main { padding: 2rem; max-width: 75rem; width: 100%; margin: 0 auto; }
+        
+        .view-section { display: none; }
+        .view-section.active { display: block; }
+        
+        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .metric-card { background: white; padding: 1.5rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; }
+        .metric-card .title { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
+        .metric-card .value { font-size: 1.75rem; font-weight: 700; color: #1e293b; margin-top: 0.25rem; }
+        
+        .card { background: white; padding: 1.5rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; margin-bottom: 1.5rem; }
+        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+        .field { display: flex; flex-direction: column; gap: 0.375rem; text-align: left; }
+        .field label { font-size: 0.812rem; font-weight: 600; color: #475569; }
+        input, select { padding: 0.625rem; border: 1px solid #cbd5e1; border-radius: 0.375rem; font-size: 0.875rem; background: white; }
+        
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.875rem; margin-top: 1rem; }
+        th, td { padding: 0.875rem 1.25rem; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 600; color: #475569; }
+        
+        .btn { padding: 0.625rem 1.25rem; border-radius: 0.375rem; font-weight: 600; font-size: 0.875rem; cursor: pointer; border: none; display: inline-flex; align-items: center; justify-content: center; }
+        .btn-primary { background: #2563eb; color: white; }
+        .btn-danger { background: #fee2e2; color: #991b1b; }
+        .btn-secondary { background: #e2e8f0; color: #475569; }
+        .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.75rem; }
+        
+        #map { height: 220px; border-radius: 0.5rem; border: 1px solid #cbd5e1; margin-top: 0.5rem; }
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 10000; }
+        .modal-content { background: white; padding: 2rem; border-radius: 0.75rem; text-align: center; max-width: 360px; width: 100%; }
+        #qrcode-box { margin: 1.5rem auto; display: flex; justify-content: center; }
+        .hidden { display: none !important; }
+        
+        @media print {
+            body * { visibility: hidden; }
+            #printable-qr-zone, #printable-qr-zone * { visibility: visible; }
+            #printable-qr-zone { position: absolute; left: 0; top: 0; width: 100%; text-align: center; }
+        }
+    </style>
 </head>
 <body>
-  <div id="login-screen">
-    <div class="login-card">
-      <h2>Mobiliario IoT</h2>
-      <p>Acesso Restrito Administrativo</p>
-      <div class="field"><label for="login_user">Usuario:</label><input type="text" id="login_user" value="admin"></div>
-      <div class="field"><label for="login_pass">Senha:</label><input type="password" id="login_pass" value="admin"></div>
-      <button onclick="realizarLogin()" class="btn btn-primary">Entrar</button>
-    </div>
-  </div>
 
-  <div id="main-dashboard" class="hidden">
-    <sidebar>
-      <div class="brand">Gaveta IOT Master</div>
-      <a onclick="switchSection('dashboard')" id="nav-dashboard" class="nav-item">Dashboard</a>
-      <a onclick="switchSection('condominios')" id="nav-condominios" class="nav-item">Condominios</a>
-      <a onclick="switchSection('moradores')" id="nav-moradores" class="nav-item">Moradores</a>
-      <a onclick="switchSection('empresas')" id="nav-empresas" class="nav-item">Empresas</a>
-      <div style="flex-grow:1"></div>
-      <button onclick="handleLogout()" class="btn btn-danger">Sair</button>
-    </sidebar>
-
-    <content-wrapper>
-      <header><h1 id="header-title">Visao Geral</h1><div>Admin Master</div></header>
-      <main>
-        <section id="sec-dashboard" class="view-section active">
-          <div class="metrics-grid">
-            <div class="metric-card"><div class="title">Disponiveis</div><div class="value" id="dash-disp">0</div></div>
-            <div class="metric-card"><div class="title">Pendentes</div><div class="value" id="dash-pend">0</div></div>
-            <div class="metric-card"><div class="title">Fora do Prazo</div><div class="value" id="dash-exp">0</div></div>
-            <div class="metric-card"><div class="title">Entregas Concluidas</div><div class="value" id="dash-ret">0</div></div>
-          </div>
-        </section>
-
-        <section id="sec-condominios" class="view-section">
-          <div class="card">
-            <h2>Gerenciar Condominio</h2>
-            <form id="form-condo" onsubmit="saveCondo(event)">
-              <input type="hidden" id="condo_id">
-              <div class="form-row">
-                <div class="field"><label for="condo_nome">Nome:</label><input id="condo_nome" required></div>
-                <div class="field"><label for="condo_cep">CEP:</label><input id="condo_cep" onblur="buscarCEP(this.value)" required></div>
-                <div class="field"><label for="condo_end">Endereco:</label><input id="condo_end" required></div>
-              </div>
-              <div class="form-row">
-                <div class="field"><label for="condo_wpp">WhatsApp Sindico:</label><input id="condo_wpp"></div>
-                <div class="field"><label for="condo_prazo">Prazo (horas):</label><input id="condo_prazo" type="number" value="24"></div>
-              </div>
-              <div class="form-row">
-                <div class="field"><label for="condo_lat">Latitude:</label><input id="condo_lat" readonly></div>
-                <div class="field"><label for="condo_lng">Longitude:</label><input id="condo_lng" readonly></div>
-                <div class="field"><button type="button" onclick="capturarGPS()" class="btn btn-secondary">Capturar GPS</button></div>
-              </div>
-              <div class="field"><label>Mapa:</label><div id="map" style="height:220px;border-radius:6px"></div></div>
-              <button class="btn btn-primary" type="submit">Salvar Condominio</button>
-            </form>
-          </div>
-
-          <div class="card">
-            <table><thead><tr><th>Condominio</th><th>CEP</th><th>Coords</th><th>Acoes</th></tr></thead>
-            <tbody id="tbl-condominios"></tbody></table>
-          </div>
-        </section>
-
-        <section id="sec-moradores" class="view-section">
-          <div class="card">
-            <h2>Filtro de Unidades</h2>
-            <div class="field"><label for="select-condo-filtro">Selecione o Condominio:</label>
-              <select id="select-condo-filtro" onchange="carregarMoradores(this.value)"><option value="">Escolha...</option></select>
+    <!-- LOGIN -->
+    <div id="login-screen">
+        <div class="login-card">
+            <h2>Mobiliario IoT</h2>
+            <p>Acesso Restrito Administrativo</p>
+            <div style="display:flex; flex-direction:column; gap:1.25rem;">
+                <div class="field"><label for="login_user">Usuario:</label><input type="text" id="login_user" value="admin"></div>
+                <div class="field"><label for="login_pass">Senha:</label><input type="password" id="login_pass" value="admin"></div>
+                <button type="button" onclick="realizarLogin()" class="btn btn-primary" style="width:100%;">Entrar</button>
             </div>
+        </div>
+    </div>
 
-            <form id="form-morador" onsubmit="saveMorador(event)" style="margin-top:1rem;">
-              <input type="hidden" id="morador_id">
-              <div class="form-row">
-                <div class="field"><label>Numero AP:</label><input id="mor_num" required></div>
-                <div class="field"><label>Bloco:</label><input id="mor_bloco" required></div>
-                <div class="field"><label>Responsavel:</label><input id="mor_nome" required></div>
-                <div class="field"><label>WhatsApp:</label><input id="mor_wpp" required></div>
-              </div>
-              <div class="form-row">
-                <div class="field"><label>Latitude:</label><input id="morador_lat"></div>
-                <div class="field"><label>Longitude:</label><input id="morador_lng"></div>
-                <div class="field"><button type="button" onclick="getGPSLocation()" class="btn btn-secondary">Obter Localizacao</button></div>
-              </div>
-              <div style="display:flex;gap:0.5rem"><button class="btn btn-primary" type="submit">Salvar Morador</button><button type="button" onclick="resetMoradorForm()" class="btn btn-secondary">Cancelar</button></div>
-            </form>
+    <!-- MAIN DASHBOARD -->
+    <div id="main-dashboard" class="hidden">
+        <sidebar>
+            <div class="brand">Gaveta IOT Master</div>
+            <a onclick="switchSection('dashboard')" class="nav-item active" id="nav-dashboard">Dashboard</a>
+            <a onclick="switchSection('condominios')" class="nav-item" id="nav-condominios">Condominios</a>
+            <a onclick="switchSection('moradores')" class="nav-item" id="nav-moradores">Moradores</a>
+            <a onclick="switchSection('empresas')" class="nav-item" id="nav-empresas">Empresas</a>
+            <div style="flex-grow:1;"></div>
+            <button onclick="handleLogout()" class="btn btn-danger">Sair</button>
+        </sidebar>
 
-            <div class="table-card" style="margin-top:1rem"><table><thead><tr><th>Unidade</th><th>Bloco</th><th>Responsavel</th><th>WhatsApp</th><th>QR</th><th>Acoes</th></tr></thead><tbody id="tbl-moradores"></tbody></table></div>
-          </div>
-        </section>
+        <content-wrapper>
+            <header><h1 id="header-title">Visao Geral</h1><div>Admin Master</div></header>
+            
+            <main>
+                <!-- SETOR A: DASHBOARD -->
+                <div id="sec-dashboard" class="view-section active">
+                    <div class="metrics-grid">
+                        <div class="metric-card"><div class="title">Disponiveis</div><div class="value" id="dash-disp">0</div></div>
+                        <div class="metric-card"><div class="title">Pendentes</div><div class="value" id="dash-pend">0</div></div>
+                        <div class="metric-card"><div class="title">Fora do Prazo</div><div class="value" id="dash-exp">0</div></div>
+                        <div class="metric-card"><div class="title">Entregas Concluidas</div><div class="value" id="dash-ret">0</div></div>
+                    </div>
+                </div>
 
-        <section id="sec-empresas" class="view-section">
-          <div class="card">
-            <h2>Empresas / Frotistas</h2>
-            <form id="form-empresa" onsubmit="saveEmpresa(event)">
-              <div class="form-row"><div class="field"><label>Nome Fantasia:</label><input id="emp_nome" required></div>
-              <div class="field"><label>Logo (PNG preferencial):</label><input id="emp_logo" type="file" accept="image/*"></div></div>
-              <button class="btn btn-primary" type="submit">Cadastrar Frotista</button>
-            </form>
-            <div style="margin-top:1rem"><table><thead><tr><th>Nome</th><th>Acoes</th></tr></thead><tbody id="tbl-empresas"></tbody></table></div>
-          </div>
-        </section>
+                <!-- SETOR B: CONDOMÍNIOS -->
+                <div id="sec-condominios" class="view-section">
+                    <div class="card">
+                        <h2>Gerenciar Condominio</h2>
+                        <form id="form-condo" onsubmit="saveCondo(event)" style="margin-top:1rem;">
+                            <input type="hidden" id="condo_id">
+                            <div class="form-row">
+                                <div class="field"><label for="condo_nome">Nome do Condominio:</label><input type="text" id="condo_nome" required></div>
+                                <div class="field"><label for="condo_cep">CEP:</label><input type="text" id="condo_cep" onblur="buscarCEP(this.value)" placeholder="00000-000" required></div>
+                                <div class="field"><label for="condo_end">Endereco Completo:</label><input type="text" id="condo_end" required></div>
+                            </div>
+                            <div class="form-row">
+                                <div class="field"><label for="condo_wpp">WhatsApp Sindico:</label><input type="text" id="condo_wpp" required></div>
+                                <div class="field"><label for="condo_prazo">Prazo Retirada (Horas):</label><input type="number" id="condo_prazo" value="24" required></div>
+                            </div>
+                            <div class="form-row">
+                                <div class="field"><label for="condo_lat">Latitude (GPS):</label><input type="text" id="condo_lat" readonly required></div>
+                                <div class="field"><label for="condo_lng">Longitude (GPS):</label><input type="text" id="condo_lng" readonly required></div>
+                                <div class="field" style="justify-content:flex-end;"><button type="button" class="btn btn-secondary" onclick="capturarGPS()">Capturar GPS Atual</button></div>
+                            </div>
+                            <div class="field"><label>Clique no mapa para ajustar a localizacao do Armario:</label><div id="map"></div></div>
+                            <button type="submit" class="btn btn-primary" style="margin-top:1rem;">Salvar Condominio</button>
+                        </form>
+                    </div>
+                    <div class="card">
+                        <table>
+                            <thead><tr><th>Condominio</th><th>CEP</th><th>Perimetro (Lat/Lng)</th><th>Acoes</th></tr></thead>
+                            <tbody id="tbl-condominios"></tbody>
+                        </table>
+                    </div>
+                </div>
 
-      </main>
-    </content-wrapper>
-  </div>
+                <!-- SETOR C: MORADORES -->
+                <div id="sec-moradores" class="view-section">
+                    <div class="card">
+                        <h2>Filtro de Unidades</h2>
+                        <div class="field" style="margin-top:0.5rem;">
+                            <label for="select-condo-filtro">Selecione o Condominio:</label>
+                            <select id="select-condo-filtro" onchange="carregarMoradores(this.value)"></select>
+                        </div>
 
-  <!-- QR Modal -->
-  <div id="qr-modal" class="modal hidden"><div class="modal-content" id="printable-qr-zone"><h3 id="qr-modal-title"></h3><div id="qrcode-box"></div><div class="no-print"><button onclick="window.print()" class="btn btn-primary btn-sm">Imprimir</button><button onclick="fecharModalQR()" class="btn btn-secondary btn-sm">Fechar</button></div></div></div>
+                        <div id="area-crud-moradores" class="card" style="margin-top:1rem;">
+                            <form id="form-morador" onsubmit="saveMorador(event)">
+                                <input type="hidden" id="morador_id">
+                                <div class="form-row">
+                                    <div class="field"><label for="mor_num">Numero AP:</label><input type="text" id="mor_num" required></div>
+                                    <div class="field"><label for="mor_bloco">Bloco:</label><input type="text" id="mor_bloco" required></div>
+                                    <div class="field"><label for="mor_nome">Responsavel:</label><input type="text" id="mor_nome" required></div>
+                                    <div class="field"><label for="mor_wpp">WhatsApp:</label><input type="text" id="mor_wpp" required></div>
+                                </div>
+                                <div style="display:flex; gap:0.5rem; margin-top: 1rem;">
+                                    <button type="submit" class="btn btn-primary">Salvar Morador</button>
+                                </div>
+                            </form>
+                        </div>
 
-  <script src="/assets/app.js"></script>
+                        <div class="table-card" style="margin-top:1rem;">
+                            <table>
+                                <thead><tr><th>Unidade</th><th>Bloco</th><th>Responsavel</th><th>WhatsApp</th><th>QR Code</th><th>Acoes</th></tr></thead>
+                                <tbody id="tbl-moradores"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SETOR D: EMPRESAS -->
+                <div id="sec-empresas" class="view-section">
+                    <div class="card">
+                        <h2>Gerenciar Empresas / Frotistas</h2>
+                        <form id="form-empresa" onsubmit="saveEmpresa(event)">
+                            <div class="form-row">
+                                <div class="field"><label for="emp_nome">Nome Fantasia:</label><input type="text" id="emp_nome" required></div>
+                                <div class="field"><label for="emp_logo">Logomarca (PNG):</label><input type="file" id="emp_logo" accept="image/png"></div>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Cadastrar Frotista</button>
+                        </form>
+                    </div>
+                    <div class="card">
+                        <table>
+                            <thead><tr><th>Nome Fantasia</th><th>Acoes</th></tr></thead>
+                            <tbody id="tbl-empresas"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+        </content-wrapper>
+    </div>
+
+    <!-- MODAL DE QR CODE/IMPRESSAO -->
+    <div id="qr-modal" class="modal hidden">
+        <div class="modal-content" id="printable-qr-zone">
+            <h3 id="qr-modal-title">QR Code do Condominio</h3>
+            <div id="qrcode-box"></div>
+            <div style="display:flex; gap:0.5rem; justify-content:center;" class="no-print">
+                <button class="btn btn-primary btn-sm" onclick="window.print()">Exportar / Imprimir</button>
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('qr-modal').classList.add('hidden')">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Defensive: ensure Leaflet is available before any init that uses L
+        function ensureLeafletLoaded() {
+            return new Promise((resolve, reject) => {
+                if (window.L) return resolve();
+                // should not happen because we include Leaflet in head, but fallback: load dynamically
+                const css = document.createElement('link');
+                css.rel = 'stylesheet';
+                css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+                document.head.appendChild(css);
+
+                const s = document.createElement('script');
+                s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+                s.crossOrigin = '';
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error('Falha ao carregar Leaflet'));
+                document.head.appendChild(s);
+            });
+        }
+
+        window.onload = function() {
+            if (localStorage.getItem('auth_token') === 'true') {
+                document.getElementById('login-screen').className = 'hidden';
+                document.getElementById('main-dashboard').className = '';
+            }
+
+            // Ensure Leaflet available before running initialization
+            ensureLeafletLoaded().then(() => {
+                if (typeof initSystem === 'function') initSystem();
+            }).catch(err => {
+                console.error('Leaflet load failed', err);
+                // still call initSystem if map is not critical
+                if (typeof initSystem === 'function') initSystem();
+            });
+        };
+    </script>
+
+    <!-- existing inline scripts (kept but will rely on Leaflet being available) -->
+    <script>
+        function realizarLogin() {
+            var u = document.getElementById('login_user').value;
+            var p = document.getElementById('login_pass').value;
+            if (u === 'admin' && p === 'admin') {
+                localStorage.setItem('auth_token', 'true');
+                document.getElementById('login-screen').className = 'hidden';
+                document.getElementById('main-dashboard').className = '';
+                syncDashboard();
+                carregarCondominios();
+                carregarEmpresas();
+            }
+        }
+
+        function handleLogout() { localStorage.removeItem('auth_token'); window.location.reload(); }
+
+        function switchSection(sec) {
+            document.querySelectorAll('.view-section').forEach(s => s.className = 'view-section');
+            document.querySelectorAll('.nav-item').forEach(n => n.className = 'nav-item');
+            const elSec = document.getElementById('sec-' + sec);
+            if (elSec) elSec.className = 'view-section active';
+            const elNav = document.getElementById('nav-' + sec);
+            if (elNav) elNav.className = 'nav-item active';
+            document.getElementById('header-title').innerText = sec.toUpperCase();
+        }
+
+        // Map helpers
+        var map, marker;
+        function initMap() {
+            if (!window.L) throw new Error('Leaflet nao carregado');
+            map = L.map('map').setView([-25.4284, -49.2733], 12);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            marker = L.marker([-25.4284, -49.2733], {draggable: true}).addTo(map);
+            marker.on('dragend', function () {
+                document.getElementById('condo_lat').value = marker.getLatLng().lat.toFixed(6);
+                document.getElementById('condo_lng').value = marker.getLatLng().lng.toFixed(6);
+            });
+            map.on('click', function(e) {
+                marker.setLatLng(e.latlng);
+                document.getElementById('condo_lat').value = e.latlng.lat.toFixed(6);
+                document.getElementById('condo_lng').value = e.latlng.lng.toFixed(6);
+            });
+        }
+
+        function capturarGPS() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(function(position) {
+                    document.getElementById('condo_lat').value = position.coords.latitude.toFixed(6);
+                    document.getElementById('condo_lng').value = position.coords.longitude.toFixed(6);
+                    if (map) { map.setView([position.coords.latitude, position.coords.longitude], 16); marker.setLatLng([position.coords.latitude, position.coords.longitude]); }
+                }, function() { alert('Erro ao obter a localização via navegador.'); });
+            } else { alert('Geolocalização não é suportada por este dispositivo.'); }
+        }
+
+        // remaining functions: buscarCEP, syncDashboard, carregarCondominios, saveCondo, carregarMoradores, saveMorador, carregarEmpresas, saveEmpresa, excluir... (kept from original repo)
+        function buscarCEP(cep) {
+            var limpo = String(cep).replace(/\D/g, '');
+            if (limpo.length === 8) {
+                fetch('https://viacep.com.br/ws/' + limpo + '/json/').then(res => res.json()).then(data => {
+                    if (!data.erro) document.getElementById('condo_end').value = data.logradouro + ", " + data.bairro + " - " + data.localidade + "/" + data.uf;
+                }).catch(console.error);
+            }
+        }
+
+        function syncDashboard() {
+            fetch('api.php?action=dados_dashboard').then(res => res.json()).then(data => {
+                document.getElementById('dash-disp').innerText = data.disponivel || 0;
+                document.getElementById('dash-pend').innerText = data.pendente || 0;
+                document.getElementById('dash-exp').innerText = data.expirado || 0;
+                document.getElementById('dash-ret').innerText = data.retirado || 0;
+            }).catch(console.error);
+        }
+
+        function carregarCondominios() {
+            fetch('api.php?action=listar_condominios').then(res => res.json()).then(data => {
+                var tbody = document.getElementById('tbl-condominios'); tbody.innerHTML = '';
+                var select = document.getElementById('select-condo-filtro'); select.innerHTML = '<option>Escolha...</option>';
+                data.condominios.forEach(c => {
+                    select.innerHTML += `<option value="${c.id}">${c.nome}</option>`;
+                    tbody.innerHTML += `<tr><td>${c.nome}</td><td>${c.cep}</td><td>${c.latitude}, ${c.longitude}</td><td><button class="btn btn-secondary btn-sm" onclick="exportarQR(${c.id}, '${c.nome}')">QR Code Portaria</button> <button class="btn btn-danger btn-sm" onclick="excluirCondo(${c.id})">Excluir</button></td></tr>`;
+                });
+                if (typeof initMap === 'function' && !map) {
+                    try { initMap(); } catch(e) { console.warn('initMap falhou', e); }
+                }
+            }).catch(console.error);
+        }
+
+        function exportarQR(id, nome) {
+            document.getElementById('qrcode-box').innerHTML = '';
+            var linkPublico = window.location.origin + '/gaveta/entregar.html?condominio_id=' + id;
+            new QRCode(document.getElementById('qrcode-box'), { text: linkPublico, width: 180, height: 180 });
+            document.getElementById('qr-modal-title').innerText = 'Acesso Frotas: ' + nome;
+            document.getElementById('qr-modal').classList.remove('hidden');
+        }
+
+        function saveCondo(e) {
+            e.preventDefault();
+            var payload = { id: document.getElementById('condo_id').value, nome: document.getElementById('condo_nome').value, cep: document.getElementById('condo_cep').value, endereco: document.getElementById('condo_end').value, whatsapp_sindico: document.getElementById('condo_wpp').value, prazo_retirada_horas: document.getElementById('condo_prazo').value, latitude: document.getElementById('condo_lat').value, longitude: document.getElementById('condo_lng').value };
+            fetch('api.php?action=salvar_condominio', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(() => { document.getElementById('form-condo').reset(); carregarCondominios(); }).catch(console.error);
+        }
+
+        function carregarMoradores(condoId) {
+            if (!condoId) { document.getElementById('area-crud-moradores').classList.add('hidden'); return; }
+            document.getElementById('area-crud-moradores').classList.remove('hidden');
+            fetch('api.php?action=listar_moradores&condominio_id=' + condoId).then(res => res.json()).then(data => {
+                var tbody = document.getElementById('tbl-moradores'); tbody.innerHTML = '';
+                data.moradores.forEach(m => {
+                    tbody.innerHTML += `<tr><td>${m.numero}</td><td>${m.bloco}</td><td>${m.nome_morador}</td><td>${m.whatsapp_morador}</td><td><button class="btn btn-secondary btn-sm" onclick="exportarQR(${m.id}, '${m.nome_morador}')">Gerar QR</button></td><td><div class="action-group"><button class="btn btn-primary btn-sm" onclick="editMorador(${m.id}, '${m.numero}', '${m.bloco}', '${m.nome_morador}', '${m.whatsapp_morador}', '${m.latitude||''}', '${m.longitude||''}')">Editar</button><button class="btn btn-danger btn-sm" onclick="deleteMorador(${m.id})">Excluir</button></div></td></tr>`;
+                });
+            }).catch(console.error);
+        }
+
+        function saveMorador(e) {
+            e.preventDefault();
+            var condoSelect = document.getElementById('select-condo-filtro').value;
+            var payload = { condominio_id: condoSelect, id: document.getElementById('morador_id').value, numero: document.getElementById('mor_num').value, bloco: document.getElementById('mor_bloco').value, nome: document.getElementById('mor_nome').value, whatsapp: document.getElementById('mor_wpp').value };
+            fetch('api.php?action=salvar_morador', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(() => { document.getElementById('form-morador').reset(); carregarMoradores(condoSelect); }).catch(console.error);
+        }
+
+        function carregarEmpresas() { fetch('api.php?action=listar_empresas').then(res => res.json()).then(data => { var tbody = document.getElementById('tbl-empresas'); tbody.innerHTML = ''; data.empresas.forEach(e => { tbody.innerHTML += `<tr><td>${e.nome}</td><td><button class='btn btn-danger btn-sm' onclick='excluirEmpresa(${e.id})'>Excluir</button></td></tr>`; }); }).catch(console.error); }
+
+        function saveEmpresa(e) { e.preventDefault(); var formData = new FormData(); formData.append('nome_empresa', document.getElementById('emp_nome').value); if (document.getElementById('emp_logo').files[0]) formData.append('logo_empresa', document.getElementById('emp_logo').files[0]); fetch('api.php?action=salvar_empresa', { method: 'POST', body: formData }).then(() => { document.getElementById('form-empresa').reset(); carregarEmpresas(); }).catch(console.error); }
+
+        function excluirCondo(id) { if (confirm('Excluir condominio e dependencias?')) fetch('api.php?action=excluir_condominio&id='+id, {method:'POST'}).then(() => carregarCondominios()); }
+        function excluirMorador(id, condoId) { if (confirm('Remover morador?')) fetch('api.php?action=excluir_morador&id='+id, {method:'POST'}).then(() => carregarMoradores(condoId)); }
+        function excluirEmpresa(id) { if (confirm('Remover frotista?')) fetch('api.php?action=excluir_empresa&id='+id, {method:'POST'}).then(() => carregarEmpresas()); }
+
+        // initialize system function used by onload
+        function initSystem() {
+            syncDashboard();
+            carregarCondominios();
+            carregarEmpresas();
+            setInterval(syncDashboard, 6000);
+        }
+    </script>
 </body>
 </html>
