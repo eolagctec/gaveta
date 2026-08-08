@@ -1,12 +1,46 @@
 <?php
 // api.php - session-based authentication (HttpOnly cookie) with optional Redis session backend
+// --- Inicialização segura: desativar exibição direta de erros e configurar logging
+ini_set('display_errors', 0);
+ini_set('display_startup_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/logs/php_errors.log');
+error_reporting(E_ALL);
+
+// garantir diretórios de logs e fallback para sessões dentro do projeto
+$logsDir = __DIR__ . DIRECTORY_SEPARATOR . 'logs';
+$tmpDir  = __DIR__ . DIRECTORY_SEPARATOR . 'tmp_sessions';
+if (!is_dir($logsDir))  @mkdir($logsDir, 0777, true);
+if (!is_dir($tmpDir))   @mkdir($tmpDir, 0777, true);
+
+// validar session.save_path atual; se inválido, usar tmp_sessions
+$savePath = ini_get('session.save_path');
+$validSavePath = false;
+if ($savePath) {
+    // session.save_path pode ter múltiplos paths separados por ; (Unix/Windows) — verificar se algum é válido
+    $candidates = preg_split('/[;:]/', $savePath);
+    foreach ($candidates as $p) {
+        $p = trim($p);
+        if ($p === '') continue;
+        if (is_dir($p) && is_writable($p)) { $validSavePath = true; break; }
+    }
+}
+if (!$validSavePath) {
+    // fallback local no projeto
+    session_save_path($tmpDir);
+}
+
+// proteger que headers JSON sejam enviados sempre
 header("Content-Type: application/json; charset=UTF-8");
 
-// CORS handling: allow configured origins for credentialed requests. Fallback to permissive for dev when no origin.
+// CORS handling: allow configured origins for credentialed requests. Fallback permissive for dev if no origin.
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 $allowed_origins = [
     'http://localhost:8000',
     'http://127.0.0.1:8000',
+    'http://localhost',
+    'http://127.0.0.1',
+    'http://gaveta.local'
 ];
 if ($origin && in_array($origin, $allowed_origins)) {
     header("Access-Control-Allow-Origin: $origin");
@@ -31,7 +65,7 @@ if (getenv('REDIS_HOST')) {
 }
 
 // Session cookie params - set secure/httponly/samesite
-$secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['SERVER_PORT'] ?? 0) == 443;
+$secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['SERVER_PORT'] ?? 0) == 443);
 session_set_cookie_params([
     'lifetime' => 0,
     'path' => '/',
@@ -41,7 +75,10 @@ session_set_cookie_params([
     'samesite' => 'Lax'
 ]);
 
-session_start();
+// Inicia a sessão apenas se ainda não houver uma ativa
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    session_start();
+}
 
 // DB connection - read credentials from environment when available
 $mysqli_host = getenv('MYSQL_HOST') ?: 'localhost';
@@ -52,6 +89,8 @@ $mysqli_db   = getenv('MYSQL_DATABASE') ?: 'gaveta_inteligente';
 $mysqli = new mysqli($mysqli_host, $mysqli_user, $mysqli_pass, $mysqli_db);
 if ($mysqli->connect_error) {
     http_response_code(500);
+    // registrar o erro no log (não exibir no output)
+    error_log("MySQL connect_error: " . $mysqli->connect_error);
     die(json_encode(["error" => "Falha na conexão com o banco"]));
 }
 $mysqli->set_charset("utf8mb4");
@@ -102,6 +141,8 @@ if ($method === 'POST' && $action === 'login') {
     $admin_pass = getenv('GAVETA_ADMIN_PASS') ?: 'admin';
 
     if ($user === $admin_user && $pass === $admin_pass) {
+        // gerar novo id de sessão seguro
+        if (session_status() !== PHP_SESSION_ACTIVE) session_start();
         session_regenerate_id(true);
         $_SESSION['user'] = $user;
         $_SESSION['expires'] = time() + 8 * 3600; // 8h
@@ -115,8 +156,10 @@ if ($method === 'POST' && $action === 'login') {
 
 if ($method === 'POST' && $action === 'logout') {
     // destroy session cookie and data
-    session_unset();
-    session_destroy();
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_unset();
+        session_destroy();
+    }
     setcookie(session_name(), '', time() - 3600, '/');
     echo json_encode(["status" => "ok"]);
     exit;
