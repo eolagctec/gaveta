@@ -104,8 +104,8 @@ function calcularDistanciaMetros($lat1, $lon1, $lat2, $lon2) {
     return $earthRadius * $c;
 }
 
+// MQTT publish using lightweight SimpleMQTT client (lib/SimpleMQTT.php)
 function publish_mqtt_command($equipamento_id, $payload) {
-    // Placeholder MQTT publisher: if MQTT_BROKER_HOST is not set, do nothing.
     $host = getenv('MQTT_BROKER_HOST') ?: '';
     if (!$host) {
         error_log("MQTT not configured - payload: " . json_encode($payload));
@@ -114,23 +114,34 @@ function publish_mqtt_command($equipamento_id, $payload) {
     $port = getenv('MQTT_BROKER_PORT') ?: '1883';
     $user = getenv('MQTT_USER') ?: '';
     $pass = getenv('MQTT_PASS') ?: '';
+    $tls = filter_var(getenv('MQTT_TLS') ?: 'false', FILTER_VALIDATE_BOOLEAN);
     $topicPrefix = getenv('MQTT_TOPIC_PREFIX') ?: 'gaveta';
     $topic = rtrim($topicPrefix, '/') . '/' . intval($equipamento_id) . '/command';
 
+    $lib = __DIR__ . '/lib/SimpleMQTT.php';
+    if (!file_exists($lib)) {
+        error_log('SimpleMQTT library not found: ' . $lib);
+        return false;
+    }
+    require_once $lib;
+
+    // SimpleMQTT expects host (optionally with ssl://) and port separately
+    $hostForConn = ($tls ? 'ssl://' : '') . $host;
+    $mqtt = new SimpleMQTT($hostForConn, $port);
+    $connected = $mqtt->connect($user !== '' ? $user : null, $pass !== '' ? $pass : null);
+    if (!$connected) {
+        error_log('MQTT: connect failed to ' . $hostForConn . ':' . $port);
+        return false;
+    }
     $message = json_encode($payload);
-    // Prefer using external mosquitto_pub if available (placeholder approach)
-    $mosq = getenv('MQTT_PUB_CMD') ?: 'mosquitto_pub';
-    $cmd = escapeshellcmd($mosq) . ' -h ' . escapeshellarg($host) . ' -p ' . escapeshellarg($port) . ' -t ' . escapeshellarg($topic) . ' -m ' . escapeshellarg($message);
-    if ($user !== '') {
-        $cmd .= ' -u ' . escapeshellarg($user) . ' -P ' . escapeshellarg($pass);
+    $published = $mqtt->publish($topic, $message, 0);
+    $mqtt->close();
+    if (!$published) {
+        error_log('MQTT: publish failed to topic ' . $topic . ' payload=' . $message);
+        return false;
     }
-    // if TLS requested, additional flags would be needed; placeholder leaves that to environment
-    @exec($cmd, $out, $rc);
-    if ($rc === 0) {
-        return true;
-    }
-    error_log("MQTT publish failed (cmd={$cmd}) rc={$rc} out=" . json_encode($out));
-    return false;
+    error_log('MQTT: published to ' . $topic . ' payload=' . $message);
+    return true;
 }
 
 function require_auth() {
@@ -410,203 +421,37 @@ if ($method === 'GET' && $action === 'dados_entrega_condominio') {
     exit;
 }
 
-// New endpoints: scan_equipamento, authorize_open, authorize_resident_open, sensor_reading, gerar_resident_link
-
-// scan_equipamento: accepts qr_hash or equipamento_id and returns equipamento info + entregas
-if ($method === 'POST' && $action === 'scan_equipamento') {
+// 6) VALIDAR PERIMETRO POR TOKEN
+if ($method === 'POST' && $action === 'validar_perimetro_morador') {
     $input = json_decode(file_get_contents('php://input'), true);
-    $qr = $input['qr_hash'] ?? '';
-    $equipamento_id = intval($input['equipamento_id'] ?? 0);
+    if (!$input) { echo json_encode(["error"=>"Payload inválido"]); exit; }
 
-    if ($qr !== '') {
-        $stmt = $mysqli->prepare("SELECT id, condominio_id, label FROM Equipamentos WHERE qr_hash = ? LIMIT 1");
-        $stmt->bind_param('s', $qr);
-    } else {
-        $stmt = $mysqli->prepare("SELECT id, condominio_id, label FROM Equipamentos WHERE id = ? LIMIT 1");
-        $stmt->bind_param('i', $equipamento_id);
-    }
+    $token = $input['token'] ?? '';
+    $user_lat = floatval($input['latitude'] ?? 0);
+    $user_lng = floatval($input['longitude'] ?? 0);
+
+    $sql = "SELECT e.id as entrega_id, c.latitude, c.longitude, c.nome as condo_nome
+            FROM Entregas e
+            JOIN Apartamentos a ON e.apartamento_id = a.id
+            JOIN Condominio c ON a.condominio_id = c.id
+            WHERE e.qr_code_retirada = ? AND e.status_entrega IN ('disponivel', 'expirado')";
+    $stmt = $mysqli->prepare($sql);
+    $stmt->bind_param('s', $token);
     $stmt->execute();
     $res = $stmt->get_result();
-    if (!$res || $res->num_rows === 0) {
-        echo json_encode(["error" => "Equipamento não encontrado"]);
-        exit;
-    }
-    $equip = $res->fetch_assoc();
-    $stmt->close();
 
-    $stmt2 = $mysqli->prepare("SELECT e.id, e.qr_code_retirada, e.status_entrega FROM Entregas e WHERE (e.equipamento_id = ? OR e.condominio_id = ?) AND e.status_entrega IN ('disponivel','pendente')");
-    $stmt2->bind_param('ii', $equip['id'], $equip['condominio_id']);
-    $stmt2->execute();
-    $res2 = $stmt2->get_result();
-    $ent = [];
-    while ($r = $res2->fetch_assoc()) $ent[] = $r;
-    $stmt2->close();
-
-    // fetch condo name
-    $stmt3 = $mysqli->prepare("SELECT nome FROM Condominio WHERE id = ? LIMIT 1");
-    $stmt3->bind_param('i', $equip['condominio_id']);
-    $stmt3->execute();
-    $cn = $stmt3->get_result()->fetch_assoc();
-    $stmt3->close();
-
-    echo json_encode(["equipamento" => $equip, "condominio_nome" => $cn['nome'] ?? null, "entregas" => $ent]);
-    exit;
-}
-
-// authorize_open: called by deliverer app to request opening the front slot (insertion flow)
-if ($method === 'POST' && $action === 'authorize_open') {
-    $input = json_decode(file_get_contents('php://input'), true);
-    $equipamento_id = intval($input['equipamento_id'] ?? 0);
-    $condominio_id = intval($input['condominio_id'] ?? 0);
-    $empresa_id = intval($input['empresa_id'] ?? 0);
-    $bloco = $input['bloco'] ?? '';
-    $numero = $input['numero'] ?? '';
-    $port = $input['port'] ?? 'front';
-
-    if (!$equipamento_id && !$condominio_id) { echo json_encode(["error"=>"equipamento_id ou condominio_id obrigatorio"]); exit; }
-
-    // create an authorization record (simple approach: resident link generated later when stored)
-    $token = bin2hex(random_bytes(12));
-    $expires = date('Y-m-d H:i:s', time() + 60*5); // short-lived command token (5 min)
-
-    // publish MQTT command (placeholder - will do nothing if MQTT not configured)
-    $payload = ["action"=>"open","port"=>$port,"token"=>$token,"issued_by"=>"api","expires_at"=>$expires];
-    publish_mqtt_command($equipamento_id ?: $condominio_id, $payload);
-
-    // record audit (simple file log)
-    error_log("authorize_open: equip=".($equipamento_id?:$condominio_id)." port={$port} token={$token}");
-
-    echo json_encode(["open"=>true,"token"=>$token,"expires_at"=>$expires]);
-    exit;
-}
-
-// authorize_resident_open: opens rear port using resident token (token-based flow)
-if ($method === 'POST' && $action === 'authorize_resident_open') {
-    $input = json_decode(file_get_contents('php://input'), true);
-    $resident_token = $input['token'] ?? '';
-    $port = $input['port'] ?? 'rear';
-    // validate token against Entregas.resident_token
-    $stmt = $mysqli->prepare("SELECT id, equipamento_id, resident_token_expires FROM Entregas WHERE resident_token = ? LIMIT 1");
-    $stmt->bind_param('s', $resident_token);
-    $stmt->execute();
-    $res = $stmt->get_result();
-    if (!$res || $res->num_rows===0) { echo json_encode(["open"=>false,"reason"=>"token_invalido"]); exit; }
-    $row = $res->fetch_assoc();
-    $stmt->close();
-    if ($row['resident_token_expires'] && strtotime($row['resident_token_expires']) < time()) {
-        echo json_encode(["open"=>false,"reason"=>"token_expirado"]);
-        exit;
-    }
-    $equipamento_id = $row['equipamento_id'];
-    $token = bin2hex(random_bytes(12));
-    $expires = date('Y-m-d H:i:s', time() + 60*5);
-    $payload = ["action"=>"open","port"=>$port,"token"=>$token,"issued_by"=>"resident","entrega_id"=>intval($row['id']),"expires_at"=>$expires];
-    publish_mqtt_command($equipamento_id, $payload);
-    echo json_encode(["open"=>true,"token"=>$token,"expires_at"=>$expires]);
-    exit;
-}
-
-// sensor_reading: records sensor readings (ultrassom and presence) and evaluates rules
-if ($method === 'POST' && $action === 'sensor_reading') {
-    $input = json_decode(file_get_contents('php://input'), true);
-    $equip_id = intval($input['equipamento_id'] ?? 0);
-    $entrega_id = intval($input['entrega_id'] ?? 0);
-    $type = $input['type'] ?? '';
-    $phase = $input['phase'] ?? null; // before|after
-    $value = isset($input['value']) ? floatval($input['value']) : null;
-    $port = $input['port'] ?? null;
-    if (!$type || $value === null) { echo json_encode(["error"=>"type e value obrigatorios"]); exit; }
-
-    $stmt = $mysqli->prepare("INSERT INTO SensorReadings (entrega_id, equipamento_id, port_id, type, phase, value) VALUES (?, ?, NULL, ?, ?, ?)");
-    $stmt->bind_param('iissd', $entrega_id, $equip_id, $type, $phase, $value);
-    $stmt->execute();
-    $stmt->close();
-
-    if ($type === 'ultrassom' && $entrega_id) {
-        if ($phase === 'before') {
-            $stmt = $mysqli->prepare("UPDATE Entregas SET volume_before = ? WHERE id = ?");
-            $stmt->bind_param('di', $value, $entrega_id);
-            $stmt->execute();
-            $stmt->close();
-            echo json_encode(["status"=>"ok","msg"=>"before saved"]);
-            exit;
-        } else if ($phase === 'after') {
-            $stmt = $mysqli->prepare("SELECT volume_before FROM Entregas WHERE id = ? LIMIT 1");
-            $stmt->bind_param('i', $entrega_id);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $before = isset($row['volume_before']) ? floatval($row['volume_before']) : null;
-            $stmt = $mysqli->prepare("UPDATE Entregas SET volume_after = ? WHERE id = ?");
-            $stmt->bind_param('di', $value, $entrega_id);
-            $stmt->execute();
-            $stmt->close();
-
-            // check presence last reading
-            $stmt = $mysqli->prepare("SELECT value FROM SensorReadings WHERE entrega_id = ? AND type = 'presence' ORDER BY id DESC LIMIT 1");
-            $stmt->bind_param('i', $entrega_id);
-            $stmt->execute();
-            $pv = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $presence = $pv ? (bool)$pv['value'] : false;
-
-            $relative_threshold = 0.10;
-            $absolute_threshold = 0.05;
-
-            $delivered = false;
-            $note = '';
-            if ($before !== null) {
-                $delta = $before - $value;
-                $relative = ($before>0) ? ($delta / $before) : 0;
-                if ($presence && ($relative >= $relative_threshold || $delta >= $absolute_threshold)) {
-                    $delivered = true;
-                } elseif (!$presence && ($relative >= $relative_threshold || $delta >= $absolute_threshold)) {
-                    $delivered = true;
-                } elseif ($presence && !($relative >= $relative_threshold || $delta >= $absolute_threshold)) {
-                    $note = 'presence_no_volume_change';
-                } else {
-                    $note = 'no_presence_no_volume_change';
-                }
-            } else {
-                if ($presence) { $delivered = true; $note='delivered_by_presence_only'; } else { $note='insufficient_data'; }
-            }
-
-            if ($delivered) {
-                $stmt = $mysqli->prepare("UPDATE Entregas SET status_entrega = 'retirado', ultrassom_confirmado = 1 WHERE id = ?");
-                $stmt->bind_param('i',$entrega_id);
-                $stmt->execute();
-                $stmt->close();
-                echo json_encode(["status"=>"ok","result"=>"delivered","note"=>$note]);
-            } else {
-                $stmt = $mysqli->prepare("UPDATE Entregas SET status_entrega = 'pendente', ultrassom_confirmado = 0 WHERE id = ?");
-                $stmt->bind_param('i',$entrega_id);
-                $stmt->execute();
-                $stmt->close();
-                echo json_encode(["status"=>"ok","result"=>"pending_review","note"=>$note]);
-            }
-            exit;
+    if ($res && $res->num_rows > 0) {
+        $dados = $res->fetch_assoc();
+        $distancia = calcularDistanciaMetros($user_lat, $user_lng, $dados['latitude'], $dados['longitude']);
+        if ($distancia <= 50.0) {
+            echo json_encode(["status" => "autorizado", "entrega_id" => $dados['entrega_id'], "distancia_metros" => round($distancia,1)]);
+        } else {
+            echo json_encode(["status" => "bloqueado", "mensagem" => "Acesso negado. Voce esta fora do perimetro do " . $dados['condo_nome'] . " (Distancia: " . round($distancia) . " metros)."]);
         }
+    } else {
+        echo json_encode(["status" => "erro", "mensagem" => "Encomenda indisponivel ou token invalido."]);
     }
-
-    echo json_encode(["status"=>"ok"]);
-    exit;
-}
-
-// gerar_resident_link: generates resident_token and expiry for an entrega and optionally sends whatsapp
-if ($method === 'POST' && $action === 'gerar_resident_link') {
-    require_auth();
-    $input = json_decode(file_get_contents('php://input'), true);
-    $entrega_id = intval($input['entrega_id'] ?? 0);
-    if (!$entrega_id) { echo json_encode(["error"=>"entrega_id necessario"]); exit; }
-    $token = bin2hex(random_bytes(16));
-    $expires = date('Y-m-d H:i:s', time() + 24*3600); // 24h
-    $stmt = $mysqli->prepare("UPDATE Entregas SET resident_token = ?, resident_token_expires = ? WHERE id = ?");
-    $stmt->bind_param('ssi', $token, $expires, $entrega_id);
-    $stmt->execute();
     $stmt->close();
-    // Optionally: send WhatsApp using external service (placeholder)
-    $link = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'gaveta.local') . '/retirada.php?token=' . $token;
-    echo json_encode(["status"=>"ok","token"=>$token,"expires_at"=>$expires,"link"=>$link]);
     exit;
 }
 
