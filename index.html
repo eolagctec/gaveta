@@ -8,9 +8,9 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
-    <script src="https://cloudflare.com"></script>
-    <link rel="stylesheet" href="https://unpkg.com" />
-    <script src="https://unpkg.com"></script>
+    <!-- QRCode library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
         body { background-color: #f1f5f9; color: #334155; display: flex; min-height: 100vh; }
@@ -45,7 +45,7 @@
         th, td { padding: 0.875rem 1.25rem; border-bottom: 1px solid #e2e8f0; }
         th { background: #f8fafc; font-weight: 600; color: #475569; }
         
-        .btn { padding: 0.625rem 1.25rem; border-radius: 0.375rem; font-weight: 600; font-size: 0.875rem; cursor: pointer; border: none; display: inline-flex; align-items: center; justify-content: center; }
+        .btn { padding: 0.625rem 1.25rem; border-radius: 0.375rem; font-weight: 600; font-size: 0.875rem; cursor: pointer; border: none; display: inline-flex; align-items: center; justify-content:center; }
         .btn-primary { background: #2563eb; color: white; }
         .btn-danger { background: #fee2e2; color: #991b1b; }
         .btn-secondary { background: #e2e8f0; color: #475569; }
@@ -210,7 +210,6 @@
         function ensureLeafletLoaded() {
             return new Promise((resolve, reject) => {
                 if (window.L) return resolve();
-                // should not happen because we include Leaflet in head, but fallback: load dynamically
                 const css = document.createElement('link');
                 css.rel = 'stylesheet';
                 css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
@@ -225,39 +224,66 @@
             });
         }
 
+        // caches
+        let condosCache = [];
+        let moradoresCache = [];
+        let empresasCache = [];
+
         window.onload = function() {
-            if (localStorage.getItem('auth_token') === 'true') {
-                document.getElementById('login-screen').className = 'hidden';
-                document.getElementById('main-dashboard').className = '';
-            }
+            // validate session via API (will rely on cookie set by login)
+            fetch('api.php?action=validate_session', { credentials: 'include' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.valid) {
+                        document.getElementById('login-screen').className = 'hidden';
+                        document.getElementById('main-dashboard').className = '';
+                        initSystem();
+                    } else {
+                        document.getElementById('login-screen').className = '';
+                        document.getElementById('main-dashboard').className = 'hidden';
+                    }
+                }).catch(err => {
+                    console.error('validate_session failed', err);
+                    document.getElementById('login-screen').className = '';
+                    document.getElementById('main-dashboard').className = 'hidden';
+                });
 
             // Ensure Leaflet available before running initialization
             ensureLeafletLoaded().then(() => {
                 if (typeof initSystem === 'function') initSystem();
             }).catch(err => {
                 console.error('Leaflet load failed', err);
-                // still call initSystem if map is not critical
                 if (typeof initSystem === 'function') initSystem();
             });
         };
     </script>
 
-    <!-- existing inline scripts (kept but will rely on Leaflet being available) -->
     <script>
         function realizarLogin() {
             var u = document.getElementById('login_user').value;
             var p = document.getElementById('login_pass').value;
-            if (u === 'admin' && p === 'admin') {
-                localStorage.setItem('auth_token', 'true');
+            fetch('api.php?action=login', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: u, password: p })
+            }).then(res => {
+                if (res.ok) return res.json();
+                throw new Error('Credenciais inválidas');
+            }).then(data => {
                 document.getElementById('login-screen').className = 'hidden';
                 document.getElementById('main-dashboard').className = '';
                 syncDashboard();
                 carregarCondominios();
                 carregarEmpresas();
-            }
+            }).catch(err => { alert('Falha no login: ' + err.message); });
         }
 
-        function handleLogout() { localStorage.removeItem('auth_token'); window.location.reload(); }
+        function handleLogout() {
+            fetch('api.php?action=logout', { method: 'POST', credentials: 'include' }).then(() => {
+                window.location.reload();
+            }).catch(() => window.location.reload());
+        }
 
         function switchSection(sec) {
             document.querySelectorAll('.view-section').forEach(s => s.className = 'view-section');
@@ -272,19 +298,21 @@
         // Map helpers
         var map, marker;
         function initMap() {
-            if (!window.L) throw new Error('Leaflet nao carregado');
-            map = L.map('map').setView([-25.4284, -49.2733], 12);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-            marker = L.marker([-25.4284, -49.2733], {draggable: true}).addTo(map);
-            marker.on('dragend', function () {
-                document.getElementById('condo_lat').value = marker.getLatLng().lat.toFixed(6);
-                document.getElementById('condo_lng').value = marker.getLatLng().lng.toFixed(6);
-            });
-            map.on('click', function(e) {
-                marker.setLatLng(e.latlng);
-                document.getElementById('condo_lat').value = e.latlng.lat.toFixed(6);
-                document.getElementById('condo_lng').value = e.latlng.lng.toFixed(6);
-            });
+            if (!window.L) return;
+            try {
+                map = L.map('map').setView([-25.4284, -49.2733], 12);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+                marker = L.marker([-25.4284, -49.2733], {draggable: true}).addTo(map);
+                marker.on('dragend', function () {
+                    document.getElementById('condo_lat').value = marker.getLatLng().lat.toFixed(6);
+                    document.getElementById('condo_lng').value = marker.getLatLng().lng.toFixed(6);
+                });
+                map.on('click', function(e) {
+                    marker.setLatLng(e.latlng);
+                    document.getElementById('condo_lat').value = e.latlng.lat.toFixed(6);
+                    document.getElementById('condo_lng').value = e.latlng.lng.toFixed(6);
+                });
+            } catch(e) { console.warn('initMap error', e); }
         }
 
         function capturarGPS() {
@@ -292,12 +320,11 @@
                 navigator.geolocation.getCurrentPosition(function(position) {
                     document.getElementById('condo_lat').value = position.coords.latitude.toFixed(6);
                     document.getElementById('condo_lng').value = position.coords.longitude.toFixed(6);
-                    if (map) { map.setView([position.coords.latitude, position.coords.longitude], 16); marker.setLatLng([position.coords.latitude, position.coords.longitude]); }
+                    if (map && marker) { map.setView([position.coords.latitude, position.coords.longitude], 16); marker.setLatLng([position.coords.latitude, position.coords.longitude]); }
                 }, function() { alert('Erro ao obter a localização via navegador.'); });
             } else { alert('Geolocalização não é suportada por este dispositivo.'); }
         }
 
-        // remaining functions: buscarCEP, syncDashboard, carregarCondominios, saveCondo, carregarMoradores, saveMorador, carregarEmpresas, saveEmpresa, excluir... (kept from original repo)
         function buscarCEP(cep) {
             var limpo = String(cep).replace(/\D/g, '');
             if (limpo.length === 8) {
@@ -308,7 +335,7 @@
         }
 
         function syncDashboard() {
-            fetch('api.php?action=dados_dashboard').then(res => res.json()).then(data => {
+            fetch('api.php?action=dados_dashboard', { credentials: 'include' }).then(res => res.json()).then(data => {
                 document.getElementById('dash-disp').innerText = data.disponivel || 0;
                 document.getElementById('dash-pend').innerText = data.pendente || 0;
                 document.getElementById('dash-exp').innerText = data.expirado || 0;
@@ -317,12 +344,15 @@
         }
 
         function carregarCondominios() {
-            fetch('api.php?action=listar_condominios').then(res => res.json()).then(data => {
+            fetch('api.php?action=listar_condominios', { credentials: 'include' }).then(res => res.json()).then(data => {
+                condosCache = data.condominios || [];
                 var tbody = document.getElementById('tbl-condominios'); tbody.innerHTML = '';
-                var select = document.getElementById('select-condo-filtro'); select.innerHTML = '<option>Escolha...</option>';
-                data.condominios.forEach(c => {
+                var select = document.getElementById('select-condo-filtro'); select.innerHTML = '<option value="">Escolha...</option>';
+                condosCache.forEach(c => {
+                    // escape single quotes in name for onclick
+                    var safeName = (c.nome || '').replace(/'/g, "\\'");
                     select.innerHTML += `<option value="${c.id}">${c.nome}</option>`;
-                    tbody.innerHTML += `<tr><td>${c.nome}</td><td>${c.cep}</td><td>${c.latitude}, ${c.longitude}</td><td><button class="btn btn-secondary btn-sm" onclick="exportarQR(${c.id}, '${c.nome}')">QR Code Portaria</button> <button class="btn btn-danger btn-sm" onclick="excluirCondo(${c.id})">Excluir</button></td></tr>`;
+                    tbody.innerHTML += `<tr><td>${c.nome}</td><td>${c.cep || ''}</td><td>${(c.latitude||0).toFixed ? (c.latitude.toFixed(6) + ', ' + c.longitude.toFixed(6)) : (c.latitude + ', ' + c.longitude)}</td><td><button class="btn btn-secondary btn-sm" onclick="exportarQR(${c.id}, '${safeName}')">QR</button> <button class="btn btn-secondary btn-sm" onclick="editarCondo(${c.id})">Editar</button> <button class="btn btn-danger btn-sm" onclick="excluirCondo(${c.id})">Excluir</button></td></tr>`;
                 });
                 if (typeof initMap === 'function' && !map) {
                     try { initMap(); } catch(e) { console.warn('initMap falhou', e); }
@@ -340,17 +370,47 @@
 
         function saveCondo(e) {
             e.preventDefault();
-            var payload = { id: document.getElementById('condo_id').value, nome: document.getElementById('condo_nome').value, cep: document.getElementById('condo_cep').value, endereco: document.getElementById('condo_end').value, whatsapp_sindico: document.getElementById('condo_wpp').value, prazo_retirada_horas: document.getElementById('condo_prazo').value, latitude: document.getElementById('condo_lat').value, longitude: document.getElementById('condo_lng').value };
-            fetch('api.php?action=salvar_condominio', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(() => { document.getElementById('form-condo').reset(); carregarCondominios(); }).catch(console.error);
+            var payload = {
+                id: document.getElementById('condo_id').value || null,
+                nome: document.getElementById('condo_nome').value,
+                cep: document.getElementById('condo_cep').value,
+                endereco: document.getElementById('condo_end').value,
+                whatsapp_sindico: document.getElementById('condo_wpp').value,
+                prazo_retirada_horas: parseInt(document.getElementById('condo_prazo').value || '24', 10),
+                latitude: parseFloat(document.getElementById('condo_lat').value || 0),
+                longitude: parseFloat(document.getElementById('condo_lng').value || 0)
+            };
+            fetch('api.php?action=salvar_condominio', { method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(res => res.json()).then(() => { 
+                document.getElementById('form-condo').reset();
+                carregarCondominios();
+                alert('Condominio salvo com sucesso');
+            }).catch(err => { console.error(err); alert('Erro ao salvar condominio'); });
+        }
+
+        function editarCondo(id) {
+            var c = condosCache.find(x => x.id == id);
+            if (!c) return alert('Condominio nao encontrado');
+            document.getElementById('condo_id').value = c.id;
+            document.getElementById('condo_nome').value = c.nome || '';
+            document.getElementById('condo_cep').value = c.cep || '';
+            document.getElementById('condo_end').value = c.endereco || '';
+            document.getElementById('condo_wpp').value = c.whatsapp_sindico || '';
+            document.getElementById('condo_prazo').value = c.prazo_retirada_horas || 24;
+            document.getElementById('condo_lat').value = parseFloat(c.latitude || 0).toFixed(6);
+            document.getElementById('condo_lng').value = parseFloat(c.longitude || 0).toFixed(6);
+            if (map && marker) { map.setView([c.latitude || 0, c.longitude || 0], 16); marker.setLatLng([c.latitude || 0, c.longitude || 0]); }
+            switchSection('condominios');
         }
 
         function carregarMoradores(condoId) {
-            if (!condoId) { document.getElementById('area-crud-moradores').classList.add('hidden'); return; }
+            if (!condoId) { document.getElementById('area-crud-moradores').classList.add('hidden'); document.getElementById('tbl-moradores').innerHTML = ''; return; }
             document.getElementById('area-crud-moradores').classList.remove('hidden');
-            fetch('api.php?action=listar_moradores&condominio_id=' + condoId).then(res => res.json()).then(data => {
+            fetch('api.php?action=listar_moradores&condominio_id=' + condoId, { credentials: 'include' }).then(res => res.json()).then(data => {
+                moradoresCache = data.moradores || [];
                 var tbody = document.getElementById('tbl-moradores'); tbody.innerHTML = '';
-                data.moradores.forEach(m => {
-                    tbody.innerHTML += `<tr><td>${m.numero}</td><td>${m.bloco}</td><td>${m.nome_morador}</td><td>${m.whatsapp_morador}</td><td><button class="btn btn-secondary btn-sm" onclick="exportarQR(${m.id}, '${m.nome_morador}')">Gerar QR</button></td><td><div class="action-group"><button class="btn btn-primary btn-sm" onclick="editMorador(${m.id}, '${m.numero}', '${m.bloco}', '${m.nome_morador}', '${m.whatsapp_morador}', '${m.latitude||''}', '${m.longitude||''}')">Editar</button><button class="btn btn-danger btn-sm" onclick="deleteMorador(${m.id})">Excluir</button></div></td></tr>`;
+                moradoresCache.forEach(m => {
+                    var safeName = (m.nome_morador || '').replace(/'/g, "\\'");
+                    tbody.innerHTML += `<tr><td>${m.numero}</td><td>${m.bloco}</td><td>${m.nome_morador}</td><td>${m.whatsapp_morador || ''}</td><td><button class="btn btn-secondary btn-sm" onclick="exportarQR('apt_'+${m.id}, '${safeName}')">QR</button></td><td><button class="btn btn-secondary btn-sm" onclick="editarMorador(${m.id})">Editar</button> <button class="btn btn-danger btn-sm" onclick="excluirMorador(${m.id}, ${condoId})">Remover</button></td></tr>`;
                 });
             }).catch(console.error);
         }
@@ -358,24 +418,67 @@
         function saveMorador(e) {
             e.preventDefault();
             var condoSelect = document.getElementById('select-condo-filtro').value;
-            var payload = { condominio_id: condoSelect, id: document.getElementById('morador_id').value, numero: document.getElementById('mor_num').value, bloco: document.getElementById('mor_bloco').value, nome: document.getElementById('mor_nome').value, whatsapp: document.getElementById('mor_wpp').value };
-            fetch('api.php?action=salvar_morador', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(() => { document.getElementById('form-morador').reset(); carregarMoradores(condoSelect); }).catch(console.error);
+            if (!condoSelect) return alert('Selecione um condominio antes de salvar o morador');
+            var payload = {
+                condominio_id: parseInt(condoSelect,10),
+                id: document.getElementById('morador_id').value || null,
+                numero: document.getElementById('mor_num').value,
+                bloco: document.getElementById('mor_bloco').value,
+                nome: document.getElementById('mor_nome').value,
+                whatsapp: document.getElementById('mor_wpp').value
+            };
+            fetch('api.php?action=salvar_morador', { method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }).then(res => res.json()).then(() => {
+                document.getElementById('form-morador').reset();
+                carregarMoradores(condoSelect);
+            }).catch(err => { console.error(err); alert('Erro ao salvar morador'); });
         }
 
-        function carregarEmpresas() { fetch('api.php?action=listar_empresas').then(res => res.json()).then(data => { var tbody = document.getElementById('tbl-empresas'); tbody.innerHTML = ''; data.empresas.forEach(e => { tbody.innerHTML += `<tr><td>${e.nome}</td><td><button class='btn btn-danger btn-sm' onclick='excluirEmpresa(${e.id})'>Excluir</button></td></tr>`; }); }).catch(console.error); }
+        function editarMorador(id) {
+            var m = moradoresCache.find(x => x.id == id);
+            if (!m) return alert('Morador nao encontrado');
+            document.getElementById('morador_id').value = m.id;
+            document.getElementById('mor_num').value = m.numero || '';
+            document.getElementById('mor_bloco').value = m.bloco || '';
+            document.getElementById('mor_nome').value = m.nome_morador || '';
+            document.getElementById('mor_wpp').value = m.whatsapp_morador || '';
+            switchSection('moradores');
+        }
 
-        function saveEmpresa(e) { e.preventDefault(); var formData = new FormData(); formData.append('nome_empresa', document.getElementById('emp_nome').value); if (document.getElementById('emp_logo').files[0]) formData.append('logo_empresa', document.getElementById('emp_logo').files[0]); fetch('api.php?action=salvar_empresa', { method: 'POST', body: formData }).then(() => { document.getElementById('form-empresa').reset(); carregarEmpresas(); }).catch(console.error); }
+        function carregarEmpresas() { 
+            fetch('api.php?action=listar_empresas', { credentials: 'include' }).then(res => res.json()).then(data => { 
+                empresasCache = data.empresas || [];
+                var tbody = document.getElementById('tbl-empresas'); tbody.innerHTML = ''; 
+                empresasCache.forEach(e => { 
+                    tbody.innerHTML += `<tr><td>${e.nome}</td><td><button class="btn btn-secondary btn-sm" onclick="editarEmpresa(${e.id})">Editar</button> <button class="btn btn-danger btn-sm" onclick="excluirEmpresa(${e.id})">Remover</button></td></tr>`;
+                });
+            }).catch(console.error);
+        }
 
-        function excluirCondo(id) { if (confirm('Excluir condominio e dependencias?')) fetch('api.php?action=excluir_condominio&id='+id, {method:'POST'}).then(() => carregarCondominios()); }
-        function excluirMorador(id, condoId) { if (confirm('Remover morador?')) fetch('api.php?action=excluir_morador&id='+id, {method:'POST'}).then(() => carregarMoradores(condoId)); }
-        function excluirEmpresa(id) { if (confirm('Remover frotista?')) fetch('api.php?action=excluir_empresa&id='+id, {method:'POST'}).then(() => carregarEmpresas()); }
+        function saveEmpresa(e) { 
+            e.preventDefault(); 
+            var formData = new FormData(); 
+            formData.append('nome_empresa', document.getElementById('emp_nome').value); 
+            var file = document.getElementById('emp_logo').files[0]; if (file) formData.append('logo_empresa', file);
+            fetch('api.php?action=salvar_empresa', { method: 'POST', credentials: 'include', body: formData }).then(res => res.json()).then(() => { document.getElementById('form-empresa').reset(); carregarEmpresas(); }).catch(err => { console.error(err); alert('Erro ao salvar empresa'); });
+        }
+
+        function excluirCondo(id) { if (confirm('Excluir condominio e dependencias?')) fetch('api.php?action=excluir_condominio&id='+id, {method:'POST', credentials:'include'}).then(() => carregarCondominios()); }
+        function excluirMorador(id, condoId) { if (confirm('Remover morador?')) fetch('api.php?action=excluir_morador&id='+id, {method:'POST', credentials:'include'}).then(() => carregarMoradores(condoId)); }
+        function excluirEmpresa(id) { if (confirm('Remover frotista?')) fetch('api.php?action=excluir_empresa&id='+id, {method:'POST', credentials:'include'}).then(() => carregarEmpresas()); }
+
+        function editarEmpresa(id) {
+            var e = empresasCache.find(x => x.id == id);
+            if (!e) return alert('Empresa nao encontrada');
+            document.getElementById('emp_nome').value = e.nome || '';
+            switchSection('empresas');
+        }
 
         // initialize system function used by onload
         function initSystem() {
             syncDashboard();
             carregarCondominios();
             carregarEmpresas();
-            setInterval(syncDashboard, 6000);
+            setInterval(syncDashboard, 60000);
         }
     </script>
 </body>
