@@ -2,7 +2,7 @@
 // api.php - session-based authentication (HttpOnly cookie) with optional Redis session backend
 header("Content-Type: application/json; charset=UTF-8");
 
-// CORS: for credentialed requests, cannot use wildcard '*'.
+// CORS handling: allow configured origins for credentialed requests. Fallback to permissive for dev when no origin.
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 $allowed_origins = [
     'http://localhost:8000',
@@ -11,9 +11,12 @@ $allowed_origins = [
 if ($origin && in_array($origin, $allowed_origins)) {
     header("Access-Control-Allow-Origin: $origin");
     header('Access-Control-Allow-Credentials: true');
-} else {
-    // fallback for same-origin or unknown origins during development
+} else if (!$origin) {
+    // no Origin header (same-origin requests) — allow all
     header('Access-Control-Allow-Origin: *');
+} else {
+    // unknown origin: do not allow credentials
+    header('Access-Control-Allow-Origin: null');
 }
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, X-Requested-With');
@@ -40,8 +43,13 @@ session_set_cookie_params([
 
 session_start();
 
-// DB connection - adjust credentials per environment
-$mysqli = new mysqli("localhost", "root", "", "gaveta_inteligente");
+// DB connection - read credentials from environment when available
+$mysqli_host = getenv('MYSQL_HOST') ?: 'localhost';
+$mysqli_user = getenv('MYSQL_USER') ?: 'root';
+$mysqli_pass = getenv('MYSQL_PASSWORD') ?: '';
+$mysqli_db   = getenv('MYSQL_DATABASE') ?: 'gaveta_inteligente';
+
+$mysqli = new mysqli($mysqli_host, $mysqli_user, $mysqli_pass, $mysqli_db);
 if ($mysqli->connect_error) {
     http_response_code(500);
     die(json_encode(["error" => "Falha na conexão com o banco"]));
@@ -355,7 +363,7 @@ if ($method === 'POST' && $action === 'validar_perimetro_morador') {
         if ($distancia <= 50.0) {
             echo json_encode(["status" => "autorizado", "entrega_id" => $dados['entrega_id'], "distancia_metros" => round($distancia,1)]);
         } else {
-            echo json_encode(["status" => "bloqueado", "mensagem" => "Acesso negado. Voce esta fora do perimetro do " . $dados['condo_nome'] . " (Distancia: " . round($distancia) . " metros). Vá até o armário físico."]);
+            echo json_encode(["status" => "bloqueado", "mensagem" => "Acesso negado. Voce esta fora do perimetro do " . $dados['condo_nome'] . " (Distancia: " . round($distancia) . " metros)."]);
         }
     } else {
         echo json_encode(["status" => "erro", "mensagem" => "Encomenda indisponivel ou token invalido."]);
